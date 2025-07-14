@@ -1,0 +1,547 @@
+---
+title: "Pumpkin Project"
+author: "Connor Warren"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+Objective: Create machine learning models with the pumpkin dataset.
+
+Ideas: 
+
+1. Use OTT and Weight (lbs) to create and equation that will use OTT to predict final weight. Compare those results to the predictions in the data set. Can we create a better model to predict weight based of OTT that has been used in the past?
+
+2. Can we use the mother, father, and grower to predict the weight of the final pumpkin?
+
+## Setup
+
+```{r setup, message = FALSE}
+library(tidyverse)
+library(caret)
+library(pROC)
+library(MLmetrics)
+library(moderndive) # add to use get_regression_table()
+library(fastDummies) # added to use dummy_col()
+library(skimr) # for EDA
+library(gbm) # to try gradient boosting model
+library(GGally) # for ggpairs EDA
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, echo=FALSE}
+# Import the data set
+ds_orig = read_csv("gpc_dataset.csv")
+```
+
+## Exploratory Data Analysis & Data Cleaning
+
+#### Cleaning
+
+1. The fruit category with the largest dataset is the Atlantic Giant Pumpkins. So let's filter down to just the "AG" Category. 
+2. We are going to argue that pumpkins < 100 lbs are not giant, so they are filtered out.
+3. Variety only applies to Giant Tomatoes, so that column should be dropped.
+4. Simplfy the column names for coding
+
+```{r}
+ds_simple_names = ds_orig %>% 
+  filter (Category == "AG", 
+          `Weight (lbs)` >= 100) %>%
+  select(-Category, -Variety) %>%
+  mutate(
+    place = Place, 
+    weight = `Weight (lbs)`, 
+    grower = `Grower Name`, 
+    city = City, 
+    state = `State/Prov`, 
+    country = `Country`, 
+    gpc.site = `GPC Site`,
+    mother = `Seed (Mother)`, 
+    father = `Pollinator (Father)`, 
+    ott = OTT, 
+    est.weight = `Est. Weight`, 
+    pct.chart = `Pct. Chart`, 
+    year = Year) %>%
+  select(place, weight, grower, city, state, country, gpc.site, mother, father, ott, est.weight, pct.chart, year)
+  
+```
+
+#### skim
+
+```{r }
+skim(ds_simple_names)
+```
+#### ggpairs
+
+```{r message=FALSE, warning=FALSE}
+ds_ggpairs = ds_simple_names %>% select(-place, -grower, -city, -state, -country, -gpc.site, -mother, -father)
+ggpairs(ds_ggpairs)
+
+rm(ds_ggpairs)
+```
+
+
+## Feature Engineering
+
+#### Separate the parentage of the seed into columns of grower and parent fruit weight
+```{r}
+
+##### Initial split of the weight and grower from the mother/father columns
+
+# Separate the raw data into weight, name, and year using regex
+ds_split_weight_grower <- ds_simple_names %>%
+  mutate(
+    mother_weight = as.numeric(str_extract(ds_simple_names$mother, "\\b\\d+\\.?\\d*\\b")), # Extract weight (numeric value)
+    mother_grower_messy = str_trim(str_replace(ds_simple_names$mother, "\\b\\d+\\.?\\d*\\b", "")), # Extract name (everything else)
+    father_weight = as.numeric(str_extract(ds_simple_names$father, "\\b\\d+\\.?\\d*\\b")), # Extract weight (numeric value)
+    father_grower_messy = str_trim(str_replace(ds_simple_names$father, "\\b\\d+\\.?\\d*\\b", "")), # Extract name (everything else)
+  ) 
+
+
+#### Clean mother grower data 
+# mother_grower_to_clean = unique(ds_split$mother_grower)
+
+ds_split_clean_mom <- ds_split_weight_grower %>%
+  mutate(
+    mother_grower_cleaner = str_to_lower(str_remove_all(mother_grower_messy, "[\\d,.'*()+#]")), 
+    mother2 = str_trim(str_remove_all(mother_grower_cleaner, "\\b(?:dmg|uow|-#est|  est| est|-est| - big max|//| ? |xx |   lbs|/|-)\\b")),
+    mother3 = case_when(mother2 == "" ~ NA, 
+                        mother2 ==" x " ~ NA, 
+                        mother2 == "unknown" ~ NA, 
+                        mother2 == "?" ~ NA, 
+                        mother2 == "unkown" ~ NA,
+                        mother2 == "unknown dill" ~ NA, 
+                        mother2 == "????" ~ NA, 
+                        mother2 == "unknown seed / howard dill" ~ NA,
+                        mother2 == "dill seed" ~ NA, 
+                        mother2 == "open" ~ NA,
+                        mother2 == "-" ~ NA, 
+                        mother2 == "//" ~ NA, 
+                        mother2 == "atlantic dill" ~ NA,
+                        mother2 == "generic" ~ NA,
+                        mother2 == "seed/ howarddill" ~ NA,
+                        mother2 == "unk" ~ NA, 
+                        mother2 == "unknow" ~ NA, 
+                        mother2 == "unspecifiedhybrid" ~ NA,
+                        .default = str_trim(mother2))
+  )
+ds_split_clean_mom$mother4 = str_remove(ds_split_clean_mom$mother3," -$" ) #trailing
+ds_split_clean_mom$mother4 = str_remove(ds_split_clean_mom$mother3,"-$" ) #trailing
+ds_split_clean_mom$mother4 = str_remove(ds_split_clean_mom$mother4,"^?? " ) #leading
+ds_split_clean_mom$mother4 = str_remove(ds_split_clean_mom$mother4,"/$" ) #trailing
+ds_split_clean_mom$mother4 = str_remove(ds_split_clean_mom$mother4,"\\?$" ) #trailing
+ds_split_clean_mom$mother4 = str_remove(ds_split_clean_mom$mother4,"^/" ) #leading
+ds_split_clean_mom$mother4 = str_remove(ds_split_clean_mom$mother4,"^\\?\\?" ) #leading
+ds_split_clean_mom$mother4 = str_remove(ds_split_clean_mom$mother4,"\\[\\]$" ) #trailing
+ds_split_clean_mom$mother4 = str_remove(ds_split_clean_mom$mother4,"^unknown" ) #leading
+ds_split_clean_mom$mother4 = str_remove(ds_split_clean_mom$mother4,"^\\?" ) #leading
+ds_split_clean_mom$mother4 = str_remove(ds_split_clean_mom$mother4,"^_" ) #leading
+ds_split_clean_mom$mother4 = str_remove(ds_split_clean_mom$mother4,"^- " ) #leading
+ds_split_clean_mom$mother4 = str_remove(ds_split_clean_mom$mother4,"^-" ) #leading
+ds_split_clean_mom$mother4 = str_remove(ds_split_clean_mom$mother4,"^---" ) #leading
+ds_split_clean_mom$mother4 = str_remove(ds_split_clean_mom$mother4,"^--" ) #leading
+ds_split_clean_mom$mother4 = str_remove(ds_split_clean_mom$mother4,"^\"" ) #leading
+ds_split_clean_mom$mother4 = str_replace_all(ds_split_clean_mom$mother4,"/", "" ) #middle
+ds_split_clean_mom$mother4 = str_replace_all(ds_split_clean_mom$mother4,"-", "" ) #middle
+
+ds_split_clean_mom = ds_split_clean_mom %>%
+  mutate(mother4 = ifelse(mother4 == "", NA, mother4))
+
+ds_split_clean_mom = ds_split_clean_mom %>% select(-mother_grower_messy, -mother_grower_cleaner, -mother2, -mother3) %>% rename(mother_grower = mother4)
+
+# unique_mother_growers = as.tibble(unique(ds_split_clean_mom$mother_grower))
+
+
+
+#### Clean father grower data 
+# mother_grower_to_clean = unique(ds_split$mother_grower)
+
+ds_split_clean_father <- ds_split_clean_mom %>%
+  mutate(
+    father_grower_cleaner = str_to_lower(str_remove_all(father_grower_messy, "[\\d,.'*()+#]")), 
+    father2 = str_trim(str_remove_all(father_grower_cleaner, "\\b(?:dmg|uow|-#est|  est| est|-est| - big max|//| ? |xx |   lbs|/|-)\\b")),
+    father3 = case_when(father2 == "" ~ NA, 
+                        father2 ==" x " ~ NA, 
+                        father2 == "unknown" ~ NA, 
+                        father2 == "?" ~ NA, 
+                        father2 == "unkown" ~ NA,
+                        father2 == "unknown dill" ~ NA, 
+                        father2 == "????" ~ NA, 
+                        father2 == "unknown seed / howard dill" ~ NA,
+                        father2 == "dill seed" ~ NA, 
+                        father2 == "open" ~ NA,
+                        father2 == "-" ~ NA, 
+                        father2 == "//" ~ NA, 
+                        father2 == "atlantic dill" ~ NA,
+                        father2 == "generic" ~ NA,
+                        father2 == "seed/ howarddill" ~ NA,
+                        father2 == "unk" ~ NA, 
+                        father2 == "unknow" ~ NA, 
+                        father2 == "unspecifiedhybrid" ~ NA,
+                        .default = str_trim(father2))
+  )
+ds_split_clean_father$father4 = str_remove(ds_split_clean_father$father3," -$" ) #trailing
+ds_split_clean_father$father4 = str_remove(ds_split_clean_father$father3,"-$" ) #trailing
+ds_split_clean_father$father4 = str_remove(ds_split_clean_father$father4,"^?? " ) #leading
+ds_split_clean_father$father4 = str_remove(ds_split_clean_father$father4,"/$" ) #trailing
+ds_split_clean_father$father4 = str_remove(ds_split_clean_father$father4,"\\?$" ) #trailing
+ds_split_clean_father$father4 = str_remove(ds_split_clean_father$father4,"^/" ) #leading
+ds_split_clean_father$father4 = str_remove(ds_split_clean_father$father4,"^\\?\\?" ) #leading
+ds_split_clean_father$father4 = str_remove(ds_split_clean_father$father4,"\\[\\]$" ) #trailing
+ds_split_clean_father$father4 = str_remove(ds_split_clean_father$father4,"^unknown" ) #leading
+ds_split_clean_father$father4 = str_remove(ds_split_clean_father$father4,"^\\?" ) #leading
+ds_split_clean_father$father4 = str_remove(ds_split_clean_father$father4,"^_" ) #leading
+ds_split_clean_father$father4 = str_remove(ds_split_clean_father$father4,"^- " ) #leading
+ds_split_clean_father$father4 = str_remove(ds_split_clean_father$father4,"^-" ) #leading
+ds_split_clean_father$father4 = str_remove(ds_split_clean_father$father4,"^---" ) #leading
+ds_split_clean_father$father4 = str_remove(ds_split_clean_father$father4,"^--" ) #leading
+ds_split_clean_father$father4 = str_remove(ds_split_clean_father$father4,"^\"" ) #leading
+ds_split_clean_father$father4 = str_replace_all(ds_split_clean_father$father4,"/", "" ) #middle
+ds_split_clean_father$father4 = str_replace_all(ds_split_clean_father$father4,"-", "" ) #middle
+
+ds_split_clean_father = ds_split_clean_father %>%
+  mutate(father4 = ifelse(father4 == "", NA, father4))
+
+ds_split_clean_father = ds_split_clean_father %>% select(-father_grower_messy, -father_grower_cleaner, -father2, -father3) %>% rename(father_grower = father4)
+
+# unique_father_growers = as.tibble(unique(ds_split_clean_father$father_grower))
+```
+
+```{r}
+ds = ds_split_clean_father
+
+rm(ds_split_clean_mom)
+rm(ds_split_clean_father)
+rm(ds_split_weight_grower)
+
+
+head(ds)
+```
+
+## Specification
+
+#### Predict pumpkin weight based of the OTT measurement
+
+Since we are using OTT to predict the weight, we should remove all rows that are missing the OTT measurement as they are not useful.
+
+```{r}
+ds_ott = ds %>% drop_na(ott)
+skim(ds_ott)
+```
+Let's explore the data visually. 
+
+```{r}
+ds_ott %>% ggplot(aes(x = ott, y = weight)) + 
+  geom_point() +
+  theme_minimal()
+```
+Looks like we have some data cleaning to do. 
+
+1.  We have quite a few outliers where a very small number was entered for OTT. Let's filter most of those out. Say any ott < 100. 
+2. There are some OTT outliers on the high end also. It almost looks like someone accidently used the weight off the fruit instead of the OTT. So, let's remove any OTT > 600. 
+
+Replot
+```{r echo=FALSE}
+ds_ott %>%
+  filter(ott >= 125, 
+        ott <= 550,
+        !ott < 425 & !weight > 1000) %>% 
+  ggplot(aes(x = ott, y = weight)) + 
+  geom_point() +
+  theme_minimal()
+```
+
+
+###### Simple linear regression
+```{r}
+m1 <- lm(weight ~ ott, data = ds_ott)
+get_regression_table(m1)
+summary(m1)
+```
+
+###### With Caret (ott alone)
+
+```{r}
+# split into test/training data
+
+ds_ott_chart = ds_ott %>%
+  mutate(chart_weight = chart(ott))
+
+set.seed(504)
+train_index <- createDataPartition(ds_ott_chart$weight, times = 1, p = 0.8, list = FALSE)
+train_data <- ds_ott_chart[train_index, ]
+test_data <- ds_ott_chart[-train_index, ]
+
+# set how to split the training data for multiple training attempts to find best model
+ctrl = trainControl(method = "repeatedcv", number = 5, repeats = 3)
+
+# train model
+m2 <- train(weight ~ ott, 
+            data = train_data, 
+            method = "lm",
+            trControl = ctrl,
+            na.action = na.exclude
+            )
+
+m3 <- train(weight ~ ott, 
+            data = train_data, 
+            method = "glm",
+            trControl = ctrl
+            )
+
+m4 <- train(weight ~ ott, 
+            data = train_data, 
+            method = "gbm",
+            verbose = FALSE,
+            trControl = ctrl
+            )
+
+
+# check model
+m2
+
+m3
+
+m4
+
+```
+
+
+```{r}
+# final test of model
+weight_pred2 = predict(m2, test_data)
+postResample(pred = weight_pred2, test_data$weight)
+
+weight_pred3 = predict(m3, test_data)
+postResample(pred = weight_pred3, test_data$weight)
+
+
+weight_pred4 = predict(m4, test_data)
+postResample(pred = weight_pred4, test_data$weight)
+
+gbm.perf(m4$finalModel)
+
+```
+
+
+## Best Model
+
+
+###### With Caret (ott+)
+
+```{r}
+# split into test/training data
+set.seed(504)
+ds_ott_par = ds %>% drop_na(ott) %>% drop_na(mother_weight) %>% drop_na(father_weight)
+
+train_index <- createDataPartition(ds_ott_par$weight, times = 1, p = 0.8, list = FALSE)
+train_data <- ds_ott_par[train_index, ]
+test_data <- ds_ott_par[-train_index, ]
+
+# set how to split the training data for multiple training attempts to find best model
+ctrl = trainControl(method = "repeatedcv", number = 5, repeats = 3)
+
+# train model
+m5 <- train(weight ~ ott + mother_weight + father_weight, 
+            data = train_data, 
+            method = "lm",
+            trControl = ctrl)
+
+m6 <- train(weight ~ ott + mother_weight + father_weight, 
+            data = train_data, 
+            method = "glm",
+            trControl = ctrl)
+
+m7 <- train(weight ~ ott + mother_weight + father_weight, 
+            data = train_data, 
+            method = "gbm",
+            verbose = FALSE,
+            trControl = ctrl)
+
+
+# check model
+m5
+
+m6
+
+m7
+
+```
+
+
+```{r}
+# final test of model
+weight_pred5 = predict(m5, test_data)
+postResample(pred = weight_pred5, test_data$weight)
+
+weight_pred6 = predict(m6, test_data)
+postResample(pred = weight_pred6, test_data$weight)
+
+
+weight_pred7 = predict(m7, test_data)
+postResample(pred = weight_pred7, test_data$weight)
+
+```
+
+```{r}
+chart = function(ott){
+  weight = (((12.81/(1+6.87*2^(-ott/97)))^3+(ott/45.9)^3.014)-10)
+  return(weight)
+}
+
+```
+
+```{r}
+ds_ott = read_csv("ds_ott2.csv")
+
+```
+
+
+```{r}
+
+ott_split = data.frame()
+
+for (x in 0:10){
+  split_ott = x + 250
+  ds_ott_more = ds_ott %>%
+  filter(ott > split_ott) %>%
+  filter(!is.na(mother_weight) & !is.na(father_weight))
+
+  ds_ott_less = ds_ott %>%
+    filter(ott < split_ott) %>%
+    filter(!is.na(mother_weight) & !is.na(father_weight))
+  
+  set.seed(504)
+  train_index_more=createDataPartition(ds_ott_more$weight, times = 1, p = 0.8, list = FALSE)
+  train_data_more <- ds_ott_more[train_index_more, ]
+  test_data_more <- ds_ott_more[-train_index_more, ]
+  
+  # set how to split the training data for multiple training attempts to find best model
+  ctrl = trainControl(method = "repeatedcv", number = 5, repeats = 3)
+  
+  
+  m_over <- train(weight ~ ott + mother_weight + father_weight, 
+              data = train_data_more, 
+              method = "gbm",
+              verbose = FALSE,
+              trControl = ctrl
+              )
+  
+  weight_pred_over = predict(m_over, test_data_more)
+  more = postResample(pred = weight_pred_over, test_data_more$weight)
+  
+  train_index_less=createDataPartition(ds_ott_less$weight, times = 1, p = 0.8, list = FALSE)
+  train_data_less <- ds_ott_less[train_index_less, ]
+  test_data_less <- ds_ott_less[-train_index_less, ]
+  
+  m_less <- train(weight ~ ott, 
+              data = train_data_less, 
+              method = "gbm",
+              verbose = FALSE,
+              trControl = ctrl
+              )
+  
+  weight_pred_less = predict(m_less, test_data_less)
+  less = postResample(pred = weight_pred_less, test_data_less$weight)
+  row = as.data.frame(as.list(c(split_ott, more[1], more[2], less[1], less[2])), col.names = c("OTT", "RMSE_MORE", "R_2_MORE", "RMSE_LESS", "R_2_LESS"))
+  ott_split = bind_rows(ott_split, row)
+  
+}
+ott_split = ott_split %>%
+  mutate(RMSE_SUM = RMSE_MORE + RMSE_LESS,
+         R_2_PRODUCT = (R_2_MORE * R_2_LESS)/2) %>%
+  mutate(final_score = RMSE_SUM * (1-R_2_PRODUCT))
+```
+
+
+```{r}
+split_ott = 256
+ds_ott_more = ds_ott %>%
+  filter(ott > split_ott) %>%
+  filter(!is.na(mother_weight) & !is.na(father_weight))
+
+ds_ott_less = ds_ott %>%
+  filter(ott <= split_ott) %>%
+  filter(!is.na(mother_weight) & !is.na(father_weight))
+
+set.seed(504)
+train_index_more=createDataPartition(ds_ott_more$weight, times = 1, p = 0.8, list = FALSE)
+train_data_more <- ds_ott_more[train_index_more, ]
+test_data_more <- ds_ott_more[-train_index_more, ]
+
+# set how to split the training data for multiple training attempts to find best model
+ctrl = trainControl(method = "repeatedcv", number = 5, repeats = 3)
+
+
+m_over <- train(weight ~ ott + mother_weight, 
+            data = train_data_more, 
+            method = "gbm",
+            trControl = ctrl
+            )
+
+weight_pred_over = predict(m_over, test_data_more)
+more = postResample(pred = weight_pred_over, test_data_more$weight)
+
+train_index_less=createDataPartition(ds_ott_less$weight, times = 1, p = 0.8, list = FALSE)
+train_data_less <- ds_ott_less[train_index_less, ]
+test_data_less <- ds_ott_less[-train_index_less, ]
+
+m_less <- train(weight ~ ott, 
+            data = train_data_less, 
+            method = "gbm",
+            verbose = FALSE,
+            trControl = ctrl
+            )
+
+weight_pred_less = predict(m_less, test_data_less)
+less = postResample(pred = weight_pred_less, test_data_less$weight)
+
+
+test_data_less = test_data_less %>%
+  mutate(chart_weight = chart(ott))
+
+test_data_more = test_data_more %>%
+  mutate(chart_weight = chart(ott))
+
+
+
+chart_more = RMSE(test_data_more$chart_weight, test_data_more$weight)
+chart_less = RMSE(test_data_less$chart_weight, test_data_less$weight)
+
+comparison = as.data.frame(as.list(c('Chart', chart_more, chart_less)), col.names = c("Model", "Above", "Below")) %>%
+  bind_rows(as.data.frame(as.list(c('Boosting', more[1], less[1])), col.names = c("Model","Above", "Below")))
+
+```
+
+
+```{r}
+
+
+table = read_csv("505 OTT to lbs - Data Table.csv") %>%
+  mutate(ott = OTT) %>%
+  select(ott, lbs)
+
+table_lower = table %>%
+  filter(ott <= 256)
+
+table_upper = table %>%
+  filter(ott > 256) %>%
+  mutate(mother_weight = 2000)
+
+
+weight_lower = predict(m_less, table_lower)
+weight_upper = predict(m_over, table_upper)
+
+
+table_lower = table_lower %>%
+  mutate(lbs = weight_lower) %>%
+  select(ott, lbs)
+
+table_upper = table_upper %>%
+  mutate(lbs = weight_upper) %>%
+  select(ott, lbs)
+
+bind_rows(table_lower, table_upper) %>%
+  write_csv("table2.csv")
+
+```
+

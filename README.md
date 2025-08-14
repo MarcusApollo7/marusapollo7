@@ -11,7 +11,7 @@ My current resume as of 7/14/2025 can be found here: <a href="pdfs/Resume (4).pd
 
 ## Past Projects
 ### Project 1 
-<a href="pdfs/Capstone_write_up.pdf" target="_blank">Capstone Immigration Project Write Up</a>
+[Capstone Immigration Project Write Up](https://wu-msds-capstones.github.io/immigration-policy-research/)
 
 <a href="pdfs/ILRC Prez (2).pdf" target="_blank">Capstone Immigration Project Slidedeck</a>
 This is the capstone project for my Data Science Master’s at Willamette University. My groupmate and I looked at the underlying patterns that relate immigrant populations, economic data, election returns, and the level of collaboration between federal immigration enforcement and local law enforcement. Of those featuers, we found that the composition of the state's Legislature is the most predictive. 
